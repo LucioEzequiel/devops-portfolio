@@ -1,0 +1,159 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: devops-portfolio
+  labels:
+    app: prometheus
+    component: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        monitor: 'devops-portfolio'
+        environment: 'kubernetes'
+
+    rule_files:
+      - "/etc/prometheus/alerts.yml"
+
+    scrape_configs:
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: backend
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "5000"
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: kubernetes_pod_name
+
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_label_app]
+            action: keep
+            regex: node-exporter
+          - action: labelmap
+            regex: __meta_kubernetes_service_label_(.+)
+
+      - job_name: 'cadvisor'
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_label_app]
+            action: keep
+            regex: cadvisor
+          - action: labelmap
+            regex: __meta_kubernetes_service_label_(.+)
+
+      - job_name: 'kube-state-metrics'
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_label_app]
+            action: keep
+            regex: kube-state-metrics
+          - action: labelmap
+            regex: __meta_kubernetes_service_label_(.+)
+
+      - job_name: 'traefik'
+        static_configs:
+          - targets: ['10.42.2.38:9100']
+
+  alerts.yml: |
+    groups:
+      - name: app-alerts
+        interval: 30s
+        rules:
+          - alert: AppDown
+            expr: up{job="kubernetes-pods"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Backend caído"
+              description: "El pod de la API Flask no responde en el namespace {{ $labels.kubernetes_namespace }}."
+
+          - alert: HighCPU
+            expr: 100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "CPU alta en {{ $labels.instance }}"
+              description: "El uso de CPU del nodo superó el 80% (Valor actual: {{ $value | printf \"%.1f\" }}%)."
+
+          - alert: HighErrorRate
+            expr: rate(app_requests_total{status=~"5.."}[5m]) / rate(app_requests_total[5m]) > 0.05
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Tasa de errores HTTP alta"
+              description: "Más del 5% de las solicitudes HTTP de la API Flask están fallando."
+
+          - alert: DiskSpaceLow
+            expr: (node_filesystem_size_bytes{mountpoint="/"} - node_filesystem_free_bytes{mountpoint="/"}) / node_filesystem_size_bytes{mountpoint="/"} > 0.85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Espacio en disco bajo"
+              description: "El almacenamiento en el volumen raíz superó el 85% de uso."
+
+      - name: ciberseguridad-alerts
+        interval: 30s
+        rules:
+          - alert: IngressPicoErrores4xx5xx
+            expr: sum(rate(traefik_entrypoint_requests_total{entrypoint="web",code=~"4..|5.."}[2m])) > 10
+            for: 1m
+            labels:
+              severity: critical
+              category: ciberseguridad
+            annotations:
+              summary: "Posible escaneo de rutas o ataque en el ingress"
+              description: "Traefik registra más de 10 respuestas 4xx/5xx por segundo en los últimos 2 minutos."
+
+          - alert: InvasionIntentosAuthFallidos
+            expr: sum(rate(app_requests_total{status="401", endpoint="/login"}[2m])) > 5
+            for: 30s
+            labels:
+              severity: critical
+              category: aplicacion
+            annotations:
+              summary: "Múltiples intentos de inicio de sesión fallidos"
+              description: "Se detectan más de 5 fallos de autenticación por segundo en la API. Nota: la Notes App no tiene login, esta regla no se dispara con esta aplicación."
+
+          - alert: PicoErroresConexionBaseDatos
+            expr: sum(rate(app_db_errors_total[2m])) > 2
+            for: 30s
+            labels:
+              severity: critical
+              category: persistencia
+            annotations:
+              summary: "Pico anómalo de errores en la base de datos PostgreSQL"
+              description: "La API registra consultas fallidas o desconexiones repetidas contra la base de datos."
+
+          - alert: PodReiniciosFrecuentesSeguridad
+            expr: increase(kube_pod_container_status_restarts_total{namespace="devops-portfolio"}[5m]) > 2
+            for: 1m
+            labels:
+              severity: warning
+              category: infraestructura
+            annotations:
+              summary: "Pod reiniciándose repetidamente"
+              description: "El pod {{ $labels.pod }} en el contenedor {{ $labels.container }} se reinició más de 2 veces en 5 minutos."
