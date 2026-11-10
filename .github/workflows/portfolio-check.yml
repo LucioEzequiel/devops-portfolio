@@ -1,0 +1,43 @@
+name: Portfolio check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-repos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verificar que los repos del portfolio existan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          REPOS="devops-TP01 devops-TP02 devops-gitflow devops-TP04 devops-TP05 devops-TP06 devops-TP08 devops-TP09 devops-TP10 devops-TP11 devops-portfolio"
+          fallos=0
+          for r in $REPOS; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/LucioEzequiel/$r")
+            echo "$r -> $code"
+            if [ "$code" != "200" ]; then fallos=$((fallos+1)); fi
+          done
+          if [ "$fallos" -gt 0 ]; then echo "Faltan $fallos repos"; exit 1; fi
+
+  lint-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar secciones del README
+        run: |
+          set -e
+          for seccion in "## Stack tecnológico" "## Proyectos por TP" "## Plataformas usadas"; do
+            if ! grep -q "^$seccion" README.md; then
+              echo "Falta la sección: $seccion"
+              exit 1
+            fi
+            echo "OK: $seccion"
+          done
